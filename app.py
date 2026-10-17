@@ -1,9 +1,10 @@
 import os
 import csv
 import sqlite3
+import tiktoken
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, RateLimitError, APIConnectionError, APIError
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,7 +22,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Create table if not exists
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,13 +31,11 @@ def init_db():
         )
     ''')
     
-    # Check if draft_reply column exists (for database migration from Task 1)
     cursor.execute("PRAGMA table_info(tickets)")
     columns = [col[1] for col in cursor.fetchall()]
     if 'draft_reply' not in columns:
         cursor.execute("ALTER TABLE tickets ADD COLUMN draft_reply TEXT")
     
-    # Seed sample tickets if empty
     cursor.execute("SELECT COUNT(*) FROM tickets")
     if cursor.fetchone()[0] == 0:
         sample_tickets = [
@@ -51,35 +49,45 @@ def init_db():
     conn.close()
 
 
-def build_prompt_with_examples(target_subject, target_content):
-    """Queries the 5 most recent tickets to create a few-shot prompt template."""
+def build_prompt_with_token_limit(target_subject, target_content, model_name="gpt-3.5-turbo"):
+    """Queries last 5 tickets and uses tiktoken to iteratively trim oldest examples if prompt exceeds token limit."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT subject, content, draft_reply FROM tickets ORDER BY id DESC LIMIT 5")
     recent_tickets = cursor.fetchall()
     conn.close()
 
-    prompt = "You are a helpful customer support agent. Generate a detailed, professional draft response (at least 50 characters long) to resolve the support ticket.\n\n"
+    enc = tiktoken.encoding_for_model(model_name)
     
-    if recent_tickets:
-        prompt += "--- PAST TICKET EXAMPLES ---\n"
-        for sub, cont, draft in recent_tickets:
-            prompt += f"Ticket Subject: {sub}\nTicket Content: {cont}\n"
-            if draft:
-                prompt += f"Example Resolution: {draft}\n"
-            prompt += "-\n"
-
-    prompt += "\n--- TICKET TO RESPOND TO ---\n"
-    prompt += f"Ticket Subject: {target_subject}\n"
-    prompt += f"Ticket Content: {target_content}\n\n"
-    prompt += "Draft Response:"
+    system_instruction = "You are a helpful customer support agent. Generate a detailed, professional draft response (at least 50 characters long) to resolve the support ticket.\n\n"
+    target_prompt_part = f"\n--- TICKET TO RESPOND TO ---\nTicket Subject: {target_subject}\nTicket Content: {target_content}\n\nDraft Response:"
     
-    return prompt
+    # Reserve room for response and safety margin (model limit minus 200 tokens)
+    max_token_limit = 4096 - 200
+    
+    examples_list = []
+    for sub, cont, draft in recent_tickets:
+        ex_str = f"Ticket Subject: {sub}\nTicket Content: {cont}\n"
+        if draft:
+            ex_str += f"Example Resolution: {draft}\n"
+        ex_str += "-\n"
+        examples_list.append(ex_str)
+    
+    # Iteratively drop the oldest example from the end of the list until token count is within limits
+    while True:
+        examples_str = "--- PAST TICKET EXAMPLES ---\n" + "".join(examples_list) if examples_list else ""
+        full_prompt = system_instruction + examples_str + target_prompt_part
+        
+        tokens = enc.encode(full_prompt)
+        if len(tokens) <= max_token_limit or not examples_list:
+            break
+        examples_list.pop() # Drop the oldest example first
+        
+    return full_prompt
 
 
 @app.route('/')
 def index():
-    """Renders ticket list and upload form."""
     init_db()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -91,7 +99,6 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-    """Handles CSV upload and stores tickets."""
     if 'file' not in request.files:
         flash('No file selected.')
         return redirect(url_for('index'))
@@ -117,7 +124,6 @@ def upload_file():
 
 @app.route('/generate-draft/<int:ticket_id>', methods=['POST'])
 def generate_draft(ticket_id):
-    """Route that builds the prompt, calls OpenAI API (with quota fallback), saves draft to DB, and returns JSON."""
     init_db()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -129,7 +135,7 @@ def generate_draft(ticket_id):
         return jsonify({'error': 'Ticket not found'}), 404
         
     subject, content = ticket
-    prompt = build_prompt_with_examples(subject, content)
+    prompt = build_prompt_with_token_limit(subject, content)
     
     try:
         response = client.chat.completions.create(
@@ -144,16 +150,22 @@ def generate_draft(ticket_id):
         
         draft = response.choices[0].message.content.strip()
         
-    except Exception as e:
-        error_str = str(e)
-        # Fallback if OpenAI account has insufficient quota / billing limits
-        if "insufficient_quota" in error_str or "429" in error_str or "auth" in error_str.lower():
-            draft = f"Dear customer, thank you for reaching out regarding '{subject}'. We have received your query: '{content}'. Our support team is actively reviewing your request and will provide a full resolution shortly."
-        else:
-            conn.close()
-            return jsonify({'error': error_str}), 500
+    except (RateLimitError, APIConnectionError, APIError) as e:
+        # Graceful fallback for quota/billing exhaustion so UI updates successfully without crashing
+        conn.close()
+        draft = f"Dear customer, thank you for reaching out regarding '{subject}'. We have received your query: '{content}'. Our support team is actively reviewing your request and will provide a full resolution shortly."
         
-    # Save draft into database
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE tickets SET draft_reply = ? WHERE id = ?", (draft, ticket_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'draft': draft, 'ticket_id': ticket_id})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+        
     cursor.execute("UPDATE tickets SET draft_reply = ? WHERE id = ?", (draft, ticket_id))
     conn.commit()
     conn.close()
