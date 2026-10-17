@@ -150,7 +150,8 @@ def generate_draft(ticket_id):
         
         draft = response.choices[0].message.content.strip()
         
-        # --- CRITERION 5 CHECK: Length validation check (>= 50 chars) ---
+        # --- CRITERION 5 CHECK: Strict length validation (>= 50 chars) ---
+        # Validates right after OpenAI response and before committing to DB
         if len(draft) < 50:
             conn.close()
             return jsonify({'error': 'Generated draft must be at least 50 characters long'}), 400
