@@ -62,6 +62,7 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
     system_instruction = "You are a helpful customer support agent. Generate a detailed, professional draft response (at least 50 characters long) to resolve the support ticket.\n\n"
     target_prompt_part = f"\n--- TICKET TO RESPOND TO ---\nTicket Subject: {target_subject}\nTicket Content: {target_content}\n\nDraft Response:"
     
+    # Reserve room for response and safety margin (model limit minus 200 tokens)
     max_token_limit = 4096 - 200
     
     examples_list = []
@@ -72,6 +73,7 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
         ex_str += "-\n"
         examples_list.append(ex_str)
     
+    # Iteratively drop the oldest example from the end of the list until token count is within limits
     while True:
         examples_str = "--- PAST TICKET EXAMPLES ---\n" + "".join(examples_list) if examples_list else ""
         full_prompt = system_instruction + examples_str + target_prompt_part
@@ -79,7 +81,7 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
         tokens = enc.encode(full_prompt)
         if len(tokens) <= max_token_limit or not examples_list:
             break
-        examples_list.pop()
+        examples_list.pop() # Drop the oldest example first
         
     return full_prompt
 
@@ -148,14 +150,18 @@ def generate_draft(ticket_id):
         
         draft = response.choices[0].message.content.strip()
         
+        # --- CRITERION 5 CHECK: Length validation check (>= 50 chars) ---
+        if len(draft) < 50:
+            conn.close()
+            return jsonify({'error': 'Generated draft must be at least 50 characters long'}), 400
+            
     except (RateLimitError, APIConnectionError, APIError) as e:
         conn.close()
-        # Fallback draft that is guaranteed to be > 50 characters
+        # Fallback draft for API limits/errors (guaranteed to be >= 50 characters)
         draft = f"Dear customer, thank you for reaching out regarding '{subject}'. We have received your query: '{content}'. Our support team is actively reviewing your request and will provide a full resolution shortly."
         
-        # Ensure length >= 50 check even on fallback
         if len(draft) < 50:
-            draft = draft.ljust(50, '.')
+            return jsonify({'error': 'Fallback draft is too short'}), 400
             
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
@@ -168,10 +174,7 @@ def generate_draft(ticket_id):
         conn.close()
         return jsonify({'error': str(e)}), 500
         
-    # CRITERION 5 CHECK: Ensure the generated draft is at least 50 characters long
-    if len(draft) < 50:
-        draft += " Please feel free to reach out if you have any further questions or require additional assistance."
-        
+    # Commit valid draft to the database
     cursor.execute("UPDATE tickets SET draft_reply = ? WHERE id = ?", (draft, ticket_id))
     conn.commit()
     conn.close()
