@@ -1,28 +1,30 @@
-# MediPlus Support Ticket AI Assistant
+# MediPlus Pharmacy - AI Customer Support Ticket Management System
 
-A production-ready Flask web application designed for MediPlus Pharmacy to automate initial customer support draft generation using the OpenAI API (`gpt-3.5-turbo`), calculate token and character evaluation metrics via `tiktoken`, and allow human-in-the-loop review before finalized responses are sent.
-
----
-
-## 🛠️ Features
-- **AI Draft Generation:** Automatically generates empathetic, policy-compliant support drafts for customer queries.
-- **Evaluation Metrics:** Uses `tiktoken` to compute token counts and character length in real-time on generation and edit.
-- **Human Review Dashboard:** Editable draft fields with instant character-count updates and approval workflow.
-- **CSV Bulk Import:** Import multiple customer tickets directly via CSV upload.
-- **Database Resilience:** Auto-migrating SQLite schema dynamically adds missing metric columns on startup (`PRAGMA table_info`).
+An AI-powered web application built with Flask and OpenAI API to help customer support agents draft, edit, and manage responses for incoming support tickets efficiently.
 
 ---
 
-## 🚀 Setup Instructions
+## 📋 Features
 
-### 1. Local Setup
-```bash
-git clone [https://github.com/muhammadadeel-se/ticket-app.git](https://github.com/muhammadadeel-se/ticket-app.git)
-cd ticket-app
+- **Ticket Dashboard**: View pending customer queries and support tickets.
+- **AI Draft Generation**: Generate contextual, professional responses using OpenAI's GPT-3.5 model.
+- **Interactive Review & Edit**: Review, edit, and finalize generated drafts before sending.
+- **Real-Time Evaluation Metrics**: Monitor response character counts and estimated token metrics.
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+---
 
-# Install dependencies
-pip install -r requirements.txt
+## 🛠️ Prerequisites
+
+- Python 3.10+
+- An active [OpenAI API Key](https://platform.openai.com/)
+- Git installed on your system
+
+---
+
+## 🔑 Environment Variables & API Key Setup
+
+To run this application securely, you must configure your environment variables.
+
+1. Create a `.env` file in the root directory of the project:
+   ```bash
+   touch .env
