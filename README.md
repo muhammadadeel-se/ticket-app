@@ -1,27 +1,28 @@
-# MediPlus Pharmacy - Support Ticket Management System
+# MediPlus Support Ticket AI Assistant
 
-A production-ready Flask web application built for MediPlus Pharmacy support teams. It integrates OpenAI models with strict prompt engineering, few-shot historical examples, dynamic token management using `tiktoken`, and real-time evaluation metrics tracking.
-
----
-
-## 🚀 Live Demo & Repository Links
-* **Live Application:** `https://112233.pythonanywhere.com`
-* **GitHub Repository:** `https://github.com/muhammadadeel-se/ticket-app`
+A production-ready Flask web application designed for MediPlus Pharmacy to automate initial customer support draft generation using the OpenAI API (`gpt-3.5-turbo`), calculate token and character evaluation metrics via `tiktoken`, and allow human-in-the-loop review before finalized responses are sent.
 
 ---
 
-## ✨ Key Features & Implementation Highlights
-1. **AI Draft Generation & Policy Compliance:** Generates empathetic support replies adhering strictly to pharmacy guidelines (prohibiting medical diagnoses or direct prescription fulfillment).
-2. **Dynamic Evaluation Metrics (`tiktoken`):** Automatically calculates character lengths and token counts upon draft generation and edit, displaying metrics across dashboard tables and review pages.
-3. **Database Migration & Resilience (SQLite):** Uses `PRAGMA table_info` checks in `init_db()` to safely auto-migrate missing columns (`draft_length`, `token_count`, `comment`, `status`) on legacy databases without data loss or crashes.
-4. **Review & Approval Workflow:** Dedicated review interface (`/review/<id>`) allowing support leads to edit drafts, monitor evaluation metrics, leave internal comments, and approve tickets.
-5. **CSV Bulk Upload:** Supports importing customer tickets via CSV files.
+## 🛠️ Features
+- **AI Draft Generation:** Automatically generates empathetic, policy-compliant support drafts for customer queries.
+- **Evaluation Metrics:** Uses `tiktoken` to compute token counts and character length in real-time on generation and edit.
+- **Human Review Dashboard:** Editable draft fields with instant character-count updates and approval workflow.
+- **CSV Bulk Import:** Import multiple customer tickets directly via CSV upload.
+- **Database Resilience:** Auto-migrating SQLite schema dynamically adds missing metric columns on startup (`PRAGMA table_info`).
 
 ---
 
-## 🛠️ Complete Setup Guide
+## 🚀 Setup Instructions
 
-1. **Clone the Repository:**
-   ```bash
-   git clone [https://github.com/muhammadadeel-se/ticket-app.git](https://github.com/muhammadadeel-se/ticket-app.git)
-   cd ticket-app
+### 1. Local Setup
+```bash
+git clone [https://github.com/muhammadadeel-se/ticket-app.git](https://github.com/muhammadadeel-se/ticket-app.git)
+cd ticket-app
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
