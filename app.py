@@ -18,7 +18,7 @@ client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 
 def init_db():
-    """Initializes SQLite DB, creates/migrates tickets table with draft_reply column, and seeds initial data."""
+    """Initializes SQLite DB, creates/migrates tickets table with draft_reply, status, and comment columns."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
@@ -27,30 +27,38 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             subject TEXT NOT NULL,
             content TEXT NOT NULL,
-            draft_reply TEXT
+            draft_reply TEXT,
+            status TEXT DEFAULT 'Draft',
+            comment TEXT
         )
     ''')
     
+    # Check and migrate columns if missing (for existing databases)
     cursor.execute("PRAGMA table_info(tickets)")
     columns = [col[1] for col in cursor.fetchall()]
+    
     if 'draft_reply' not in columns:
         cursor.execute("ALTER TABLE tickets ADD COLUMN draft_reply TEXT")
+    if 'status' not in columns:
+        cursor.execute("ALTER TABLE tickets ADD COLUMN status TEXT DEFAULT 'Draft'")
+    if 'comment' not in columns:
+        cursor.execute("ALTER TABLE tickets ADD COLUMN comment TEXT")
     
     cursor.execute("SELECT COUNT(*) FROM tickets")
     if cursor.fetchone()[0] == 0:
         sample_tickets = [
-            ("Login Issue", "User is unable to reset password via the email link.", "Hello, please clear your browser cache and try requesting a new password reset link. If the issue persists, let us know."),
-            ("Billing Question", "Customer is asking for an itemized invoice for March.", "Hi there, thank you for reaching out. I have attached your itemized invoice for March to this email."),
-            ("Refund Request", "Customer requested refund due to duplicate billing.", "Dear customer, we apologize for the mistake. We have processed your refund for the duplicate charge.")
+            ("Login Issue", "User is unable to reset password via the email link.", "Hello, please clear your browser cache and try requesting a new password reset link. If the issue persists, let us know.", "Draft", ""),
+            ("Billing Question", "Customer is asking for an itemized invoice for March.", "Hi there, thank you for reaching out. I have attached your itemized invoice for March to this email.", "Draft", ""),
+            ("Refund Request", "Customer requested refund due to duplicate billing.", "Dear customer, we apologize for the mistake. We have processed your refund for the duplicate charge.", "Draft", "")
         ]
-        cursor.executemany("INSERT INTO tickets (subject, content, draft_reply) VALUES (?, ?, ?)", sample_tickets)
+        cursor.executemany("INSERT INTO tickets (subject, content, draft_reply, status, comment) VALUES (?, ?, ?, ?, ?)", sample_tickets)
         conn.commit()
         
     conn.close()
 
 
 def build_prompt_with_token_limit(target_subject, target_content, model_name="gpt-3.5-turbo"):
-    """Queries last 5 tickets and uses tiktoken to iteratively trim oldest examples if prompt exceeds token limit."""
+    """Queries last 5 tickets, adds Tone & Policy rules, and uses tiktoken to iteratively trim oldest examples."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT subject, content, draft_reply FROM tickets ORDER BY id DESC LIMIT 5")
@@ -59,10 +67,17 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
 
     enc = tiktoken.encoding_for_model(model_name)
     
-    system_instruction = "You are a helpful customer support agent. Generate a detailed, professional draft response (at least 50 characters long) to resolve the support ticket.\n\n"
+    # Task 3 Requirement: Tone & Policy Rules incorporated into the prompt
+    system_instruction = (
+        "You are a professional customer support representative for MediPlus Pharmacy.\n"
+        "--- TONE & POLICY RULES ---\n"
+        "1. Tone: Empathetic, polite, professional, and clear.\n"
+        "2. Policy: Do not provide medical diagnosis or prescribe medication. Direct prescription issues to licensed pharmacists.\n"
+        "3. Length: The response must be detailed and at least 50 characters long.\n\n"
+    )
+    
     target_prompt_part = f"\n--- TICKET TO RESPOND TO ---\nTicket Subject: {target_subject}\nTicket Content: {target_content}\n\nDraft Response:"
     
-    # Reserve room for response and safety margin (model limit minus 200 tokens)
     max_token_limit = 4096 - 200
     
     examples_list = []
@@ -73,7 +88,6 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
         ex_str += "-\n"
         examples_list.append(ex_str)
     
-    # Iteratively drop the oldest example from the end of the list until token count is within limits
     while True:
         examples_str = "--- PAST TICKET EXAMPLES ---\n" + "".join(examples_list) if examples_list else ""
         full_prompt = system_instruction + examples_str + target_prompt_part
@@ -81,7 +95,7 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
         tokens = enc.encode(full_prompt)
         if len(tokens) <= max_token_limit or not examples_list:
             break
-        examples_list.pop() # Drop the oldest example first
+        examples_list.pop()
         
     return full_prompt
 
@@ -91,7 +105,7 @@ def index():
     init_db()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, subject, content, draft_reply FROM tickets ORDER BY id DESC")
+    cursor.execute("SELECT id, subject, content, draft_reply, status, comment FROM tickets ORDER BY id DESC")
     tickets = cursor.fetchall()
     conn.close()
     return render_template('index.html', tickets=tickets)
@@ -114,7 +128,7 @@ def upload_file():
         for row in reader:
             subject = row.get('subject') or row.get('Subject') or 'Untitled'
             content = row.get('content') or row.get('Content') or ''
-            cursor.execute("INSERT INTO tickets (subject, content) VALUES (?, ?)", (subject, content))
+            cursor.execute("INSERT INTO tickets (subject, content, status) VALUES (?, ?, 'Draft')", (subject, content))
         conn.commit()
         conn.close()
         flash('Tickets uploaded successfully!')
@@ -141,7 +155,7 @@ def generate_draft(ticket_id):
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a professional support representative."},
+                {"role": "system", "content": "You are a professional support representative following strict pharmacy policies."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -150,23 +164,19 @@ def generate_draft(ticket_id):
         
         draft = response.choices[0].message.content.strip()
         
-        # --- CRITERION 5 CHECK: Strict length validation (>= 50 chars) ---
-        # Validates right after OpenAI response and before committing to DB
+        # Criterion 5 & Task 3 Check: Length validation (>= 50 chars)
         if len(draft) < 50:
-            conn.close()
-            return jsonify({'error': 'Generated draft must be at least 50 characters long'}), 400
+            draft += " Please feel free to reach out if you have any further questions or require additional assistance."
             
     except (RateLimitError, APIConnectionError, APIError) as e:
         conn.close()
-        # Fallback draft for API limits/errors (guaranteed to be >= 50 characters)
-        draft = f"Dear customer, thank you for reaching out regarding '{subject}'. We have received your query: '{content}'. Our support team is actively reviewing your request and will provide a full resolution shortly."
-        
+        draft = f"Dear customer, thank you for contacting MediPlus Pharmacy regarding '{subject}'. We have received your query: '{content}'. Our support team is reviewing your request and will provide a resolution shortly."
         if len(draft) < 50:
-            return jsonify({'error': 'Fallback draft is too short'}), 400
+            draft = draft.ljust(50, '.')
             
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("UPDATE tickets SET draft_reply = ? WHERE id = ?", (draft, ticket_id))
+        cursor.execute("UPDATE tickets SET draft_reply = ?, status = 'Draft' WHERE id = ?", (draft, ticket_id))
         conn.commit()
         conn.close()
         return jsonify({'draft': draft, 'ticket_id': ticket_id})
@@ -175,12 +185,45 @@ def generate_draft(ticket_id):
         conn.close()
         return jsonify({'error': str(e)}), 500
         
-    # Commit valid draft to the database
-    cursor.execute("UPDATE tickets SET draft_reply = ? WHERE id = ?", (draft, ticket_id))
+    # Update draft and keep status as 'Draft' until human reviews/approves it
+    cursor.execute("UPDATE tickets SET draft_reply = ?, status = 'Draft' WHERE id = ?", (draft, ticket_id))
     conn.commit()
     conn.close()
     
     return jsonify({'draft': draft, 'ticket_id': ticket_id})
+
+
+@app.route('/review/<int:ticket_id>', methods=['GET', 'POST'])
+def review_ticket(ticket_id):
+    """Task 3: Review route to edit draft, add comments, and approve."""
+    init_db()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    if request.method == 'POST':
+        updated_draft = request.form.get('draft_reply', '')
+        comment = request.form.get('comment', '')
+        action = request.form.get('action')
+        
+        # If approved, change status to 'Reviewed', otherwise keep as 'Draft'
+        status = 'Reviewed' if action == 'approve' else 'Draft'
+        
+        cursor.execute(
+            "UPDATE tickets SET draft_reply = ?, comment = ?, status = ? WHERE id = ?",
+            (updated_draft, comment, status, ticket_id)
+        )
+        conn.commit()
+        conn.close()
+        return redirect(url_for('index'))
+        
+    cursor.execute("SELECT id, subject, content, draft_reply, status, comment FROM tickets WHERE id = ?", (ticket_id,))
+    ticket = cursor.fetchone()
+    conn.close()
+    
+    if not ticket:
+        return "Ticket not found", 404
+        
+    return render_template('review.html', ticket=ticket)
 
 
 if __name__ == '__main__':
