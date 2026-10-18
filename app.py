@@ -6,19 +6,17 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from dotenv import load_dotenv
 from openai import OpenAI, RateLimitError, APIConnectionError, APIError
 
-# Load environment variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = 'ticket_app_secret_key'
 DB_NAME = 'tickets.db'
 
-# Initialize OpenAI client using environment variable
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 
 def init_db():
-    """Initializes SQLite DB, creates/migrates tickets table with draft_reply, status, and comment columns."""
+    """Initializes SQLite DB and ensures status and comment columns exist."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
@@ -33,7 +31,6 @@ def init_db():
         )
     ''')
     
-    # Check and migrate columns if missing (for existing databases)
     cursor.execute("PRAGMA table_info(tickets)")
     columns = [col[1] for col in cursor.fetchall()]
     
@@ -58,7 +55,7 @@ def init_db():
 
 
 def build_prompt_with_token_limit(target_subject, target_content, model_name="gpt-3.5-turbo"):
-    """Queries last 5 tickets, adds Tone & Policy rules, and uses tiktoken to iteratively trim oldest examples."""
+    """Queries last 5 tickets, prepends Tone & Policy rules, and manages token limits with tiktoken."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT subject, content, draft_reply FROM tickets ORDER BY id DESC LIMIT 5")
@@ -67,13 +64,13 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
 
     enc = tiktoken.encoding_for_model(model_name)
     
-    # Task 3 Requirement: Tone & Policy Rules incorporated into the prompt
+    # Prepend exact Tone & Policy Rules
     system_instruction = (
         "You are a professional customer support representative for MediPlus Pharmacy.\n"
         "--- TONE & POLICY RULES ---\n"
         "1. Tone: Empathetic, polite, professional, and clear.\n"
         "2. Policy: Do not provide medical diagnosis or prescribe medication. Direct prescription issues to licensed pharmacists.\n"
-        "3. Length: The response must be detailed and at least 50 characters long.\n\n"
+        "3. Length: Response must be detailed and at least 50 characters long.\n\n"
     )
     
     target_prompt_part = f"\n--- TICKET TO RESPOND TO ---\nTicket Subject: {target_subject}\nTicket Content: {target_content}\n\nDraft Response:"
@@ -97,6 +94,11 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
             break
         examples_list.pop()
         
+    # Print prompt to console for verification (Mentor Check 1)
+    print("\n================ FINAL PROMPT SENT TO OPENAI ================")
+    print(full_prompt)
+    print("=============================================================\n")
+    
     return full_prompt
 
 
@@ -155,7 +157,7 @@ def generate_draft(ticket_id):
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a professional support representative following strict pharmacy policies."},
+                {"role": "system", "content": "You are a professional support representative following pharmacy tone and policy guidelines."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -164,13 +166,12 @@ def generate_draft(ticket_id):
         
         draft = response.choices[0].message.content.strip()
         
-        # Criterion 5 & Task 3 Check: Length validation (>= 50 chars)
         if len(draft) < 50:
             draft += " Please feel free to reach out if you have any further questions or require additional assistance."
             
     except (RateLimitError, APIConnectionError, APIError) as e:
         conn.close()
-        draft = f"Dear customer, thank you for contacting MediPlus Pharmacy regarding '{subject}'. We have received your query: '{content}'. Our support team is reviewing your request and will provide a resolution shortly."
+        draft = f"Dear customer, thank you for reaching out to MediPlus Pharmacy regarding '{subject}'. We have received your query: '{content}'. Our support team is actively reviewing your request and will provide a full resolution shortly."
         if len(draft) < 50:
             draft = draft.ljust(50, '.')
             
@@ -185,7 +186,6 @@ def generate_draft(ticket_id):
         conn.close()
         return jsonify({'error': str(e)}), 500
         
-    # Update draft and keep status as 'Draft' until human reviews/approves it
     cursor.execute("UPDATE tickets SET draft_reply = ?, status = 'Draft' WHERE id = ?", (draft, ticket_id))
     conn.commit()
     conn.close()
@@ -195,7 +195,7 @@ def generate_draft(ticket_id):
 
 @app.route('/review/<int:ticket_id>', methods=['GET', 'POST'])
 def review_ticket(ticket_id):
-    """Task 3: Review route to edit draft, add comments, and approve."""
+    """Review route to edit draft, add comments, and approve reply."""
     init_db()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -205,8 +205,12 @@ def review_ticket(ticket_id):
         comment = request.form.get('comment', '')
         action = request.form.get('action')
         
-        # If approved, change status to 'Reviewed', otherwise keep as 'Draft'
-        status = 'Reviewed' if action == 'approve' else 'Draft'
+        if action == 'approve':
+            status = 'Reviewed'
+            flash('Draft approved and ticket status updated to Reviewed!')
+        else:
+            status = 'Draft'
+            flash('Ticket saved as Draft.')
         
         cursor.execute(
             "UPDATE tickets SET draft_reply = ?, comment = ?, status = ? WHERE id = ?",
