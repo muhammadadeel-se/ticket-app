@@ -1,12 +1,20 @@
-# Support Ticket Management App
+# MediPlus Pharmacy - AI Ticket Management System
 
-A lightweight Flask web application that allows users to upload a CSV file containing support tickets, automatically stores them in a local SQLite database, and displays them in a clean ticket list interface.
+An AI-powered customer support ticket response generation and human review system built with Flask, SQLite, and OpenAI API.
 
-## Prerequisites
+---
 
-- Python 3.x installed on your system.
+## Features
+- **CSV Batch Upload:** Bulk upload tickets from CSV files.
+- **Few-Shot AI Draft Generation:** Generates contextual replies using OpenAI GPT-3.5-Turbo and past ticket examples.
+- **Tone & Policy Enforcement:** System prompts enforce polite tone and pharmacy compliance (no medical diagnoses/prescriptions).
+- **Token Truncation:** Uses `tiktoken` to dynamically fit dynamic examples within the model's token limit.
+- **Human-in-the-Loop Review Interface:** Allows staff to edit drafts, leave internal review comments, and approve responses.
+- **Evaluation Metrics:** Tracks character length and token count for every generated and edited draft.
 
-## Setup Instructions
+---
+
+## Local Setup Instructions
 
 1. **Clone the repository:**
    ```bash

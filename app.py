@@ -9,14 +9,27 @@ from openai import OpenAI, RateLimitError, APIConnectionError, APIError
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = 'ticket_app_secret_key'
+app.secret_key = os.getenv('SECRET_KEY', 'ticket_app_secret_key')
 DB_NAME = 'tickets.db'
 
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 
+def calculate_metrics(text, model_name="gpt-3.5-turbo"):
+    """Calculates evaluation metrics: character length and OpenAI token count."""
+    if not text:
+        return 0, 0
+    char_count = len(text)
+    try:
+        enc = tiktoken.encoding_for_model(model_name)
+        token_count = len(enc.encode(text))
+    except Exception:
+        token_count = len(text.split())
+    return char_count, token_count
+
+
 def init_db():
-    """Initializes SQLite DB and ensures status and comment columns exist."""
+    """Initializes SQLite DB and ensures status, comment, draft_length, and token_count columns exist."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
@@ -27,7 +40,9 @@ def init_db():
             content TEXT NOT NULL,
             draft_reply TEXT,
             status TEXT DEFAULT 'Draft',
-            comment TEXT
+            comment TEXT,
+            draft_length INTEGER DEFAULT 0,
+            token_count INTEGER DEFAULT 0
         )
     ''')
     
@@ -40,15 +55,22 @@ def init_db():
         cursor.execute("ALTER TABLE tickets ADD COLUMN status TEXT DEFAULT 'Draft'")
     if 'comment' not in columns:
         cursor.execute("ALTER TABLE tickets ADD COLUMN comment TEXT")
+    if 'draft_length' not in columns:
+        cursor.execute("ALTER TABLE tickets ADD COLUMN draft_length INTEGER DEFAULT 0")
+    if 'token_count' not in columns:
+        cursor.execute("ALTER TABLE tickets ADD COLUMN token_count INTEGER DEFAULT 0")
     
     cursor.execute("SELECT COUNT(*) FROM tickets")
     if cursor.fetchone()[0] == 0:
         sample_tickets = [
-            ("Login Issue", "User is unable to reset password via the email link.", "Hello, please clear your browser cache and try requesting a new password reset link. If the issue persists, let us know.", "Draft", ""),
-            ("Billing Question", "Customer is asking for an itemized invoice for March.", "Hi there, thank you for reaching out. I have attached your itemized invoice for March to this email.", "Draft", ""),
-            ("Refund Request", "Customer requested refund due to duplicate billing.", "Dear customer, we apologize for the mistake. We have processed your refund for the duplicate charge.", "Draft", "")
+            ("Login Issue", "User is unable to reset password via the email link.", "Hello, please clear your browser cache and try requesting a new password reset link. If the issue persists, let us know.", "Draft", "", 131, 28),
+            ("Billing Question", "Customer is asking for an itemized invoice for March.", "Hi there, thank you for reaching out. I have attached your itemized invoice for March to this email.", "Draft", "", 97, 21),
+            ("Refund Request", "Customer requested refund due to duplicate billing.", "Dear customer, we apologize for the mistake. We have processed your refund for the duplicate charge.", "Draft", "", 97, 20)
         ]
-        cursor.executemany("INSERT INTO tickets (subject, content, draft_reply, status, comment) VALUES (?, ?, ?, ?, ?)", sample_tickets)
+        cursor.executemany(
+            "INSERT INTO tickets (subject, content, draft_reply, status, comment, draft_length, token_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            sample_tickets
+        )
         conn.commit()
         
     conn.close()
@@ -64,7 +86,6 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
 
     enc = tiktoken.encoding_for_model(model_name)
     
-    # Prepend exact Tone & Policy Rules
     system_instruction = (
         "You are a professional customer support representative for MediPlus Pharmacy.\n"
         "--- TONE & POLICY RULES ---\n"
@@ -94,7 +115,6 @@ def build_prompt_with_token_limit(target_subject, target_content, model_name="gp
             break
         examples_list.pop()
         
-    # Print prompt to console for verification (Mentor Check 1)
     print("\n================ FINAL PROMPT SENT TO OPENAI ================")
     print(full_prompt)
     print("=============================================================\n")
@@ -107,7 +127,7 @@ def index():
     init_db()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, subject, content, draft_reply, status, comment FROM tickets ORDER BY id DESC")
+    cursor.execute("SELECT id, subject, content, draft_reply, status, comment, draft_length, token_count FROM tickets ORDER BY id DESC")
     tickets = cursor.fetchall()
     conn.close()
     return render_template('index.html', tickets=tickets)
@@ -175,27 +195,35 @@ def generate_draft(ticket_id):
         if len(draft) < 50:
             draft = draft.ljust(50, '.')
             
+        char_count, token_count = calculate_metrics(draft)
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("UPDATE tickets SET draft_reply = ?, status = 'Draft' WHERE id = ?", (draft, ticket_id))
+        cursor.execute(
+            "UPDATE tickets SET draft_reply = ?, status = 'Draft', draft_length = ?, token_count = ? WHERE id = ?",
+            (draft, char_count, token_count, ticket_id)
+        )
         conn.commit()
         conn.close()
-        return jsonify({'draft': draft, 'ticket_id': ticket_id})
+        return jsonify({'draft': draft, 'ticket_id': ticket_id, 'draft_length': char_count, 'token_count': token_count})
         
     except Exception as e:
         conn.close()
         return jsonify({'error': str(e)}), 500
         
-    cursor.execute("UPDATE tickets SET draft_reply = ?, status = 'Draft' WHERE id = ?", (draft, ticket_id))
+    char_count, token_count = calculate_metrics(draft)
+    cursor.execute(
+        "UPDATE tickets SET draft_reply = ?, status = 'Draft', draft_length = ?, token_count = ? WHERE id = ?",
+        (draft, char_count, token_count, ticket_id)
+    )
     conn.commit()
     conn.close()
     
-    return jsonify({'draft': draft, 'ticket_id': ticket_id})
+    return jsonify({'draft': draft, 'ticket_id': ticket_id, 'draft_length': char_count, 'token_count': token_count})
 
 
 @app.route('/review/<int:ticket_id>', methods=['GET', 'POST'])
 def review_ticket(ticket_id):
-    """Review route to edit draft, add comments, and approve reply."""
+    """Review route to edit draft, view metrics, add comments, and approve reply."""
     init_db()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -205,6 +233,8 @@ def review_ticket(ticket_id):
         comment = request.form.get('comment', '')
         action = request.form.get('action')
         
+        char_count, token_count = calculate_metrics(updated_draft)
+        
         if action == 'approve':
             status = 'Reviewed'
             flash('Draft approved and ticket status updated to Reviewed!')
@@ -213,14 +243,14 @@ def review_ticket(ticket_id):
             flash('Ticket saved as Draft.')
         
         cursor.execute(
-            "UPDATE tickets SET draft_reply = ?, comment = ?, status = ? WHERE id = ?",
-            (updated_draft, comment, status, ticket_id)
+            "UPDATE tickets SET draft_reply = ?, comment = ?, status = ?, draft_length = ?, token_count = ? WHERE id = ?",
+            (updated_draft, comment, status, char_count, token_count, ticket_id)
         )
         conn.commit()
         conn.close()
         return redirect(url_for('index'))
         
-    cursor.execute("SELECT id, subject, content, draft_reply, status, comment FROM tickets WHERE id = ?", (ticket_id,))
+    cursor.execute("SELECT id, subject, content, draft_reply, status, comment, draft_length, token_count FROM tickets WHERE id = ?", (ticket_id,))
     ticket = cursor.fetchone()
     conn.close()
     

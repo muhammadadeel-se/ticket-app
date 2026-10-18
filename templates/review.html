@@ -9,6 +9,9 @@
         .container { max-width: 700px; margin: 0 auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
         h1 { color: #2c3e50; }
         .ticket-info { background: #ecf0f1; padding: 15px; border-radius: 6px; margin-bottom: 20px; }
+        .metrics-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 15px; margin-bottom: 15px; display: flex; gap: 20px; }
+        .metric-item { font-size: 14px; font-weight: bold; color: #334155; }
+        .metric-value { color: #2563eb; font-weight: normal; }
         label { font-weight: bold; display: block; margin-top: 15px; margin-bottom: 5px; color: #34495e; }
         textarea { width: 100%; padding: 10px; border-radius: 4px; border: 1px solid #ccc; font-family: inherit; font-size: 14px; box-sizing: border-box; }
         .btn-group { margin-top: 20px; display: flex; gap: 10px; }
@@ -30,6 +33,11 @@
         <h3>Subject: {{ ticket[1] }}</h3>
         <p><strong>Customer Content:</strong> {{ ticket[2] }}</p>
         <p><strong>Current Status:</strong> <span>{{ ticket[4] }}</span></p>
+    </div>
+
+    <div class="metrics-card">
+        <div class="metric-item">Draft Length: <span class="metric-value">{{ ticket[6] or 0 }} characters</span></div>
+        <div class="metric-item">Token Count: <span class="metric-value">{{ ticket[7] or 0 }} tokens</span></div>
     </div>
 
     <form action="/review/{{ ticket[0] }}" method="post">
