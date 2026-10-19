@@ -21,10 +21,11 @@ An AI-powered web application built with Flask and OpenAI API to help customer s
 
 ---
 
-## 🔑 Environment Variables & API Key Setup
+## 🔑 API Key & Secrets Setup
 
-To run this application securely, you must configure your environment variables.
+To maintain security, actual credentials (such as your OpenAI API Key) are **never** committed to version control.
 
-1. Create a `.env` file in the root directory of the project:
+1. **Copy the Environment Template:**
+   Duplicate the `.env.example` file to create your local `.env` configuration file:
    ```bash
-   touch .env
+   cp .env.example .env
